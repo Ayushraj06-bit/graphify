@@ -8544,8 +8544,9 @@ def extract(
                 continue
             go_exact_import = True
         # An unqualified Elixir call can only reach the caller's own module
-        # (resolved in-file by the extractor), Kernel, or a module the file
-        # `import`s or `use`s. A same-named def in any other module is out of
+        # (resolved in-file by the extractor), Kernel, or a module imported or
+        # used in the caller's lexical scope (the extractor records those as
+        # `elixir_call_scope`). A same-named def in any other module is out of
         # scope: binding to it by name landed every migration's `table(:users)`
         # (Ecto.Migration, pulled in by `use`) on an unrelated Phoenix
         # component's `table/1` and made it the top god node (#4001).
