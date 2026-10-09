@@ -1464,6 +1464,95 @@ def _self_call_target(
         ))
     return None if fallback in method_owner else fallback
 
+# Languages whose unqualified `m()` call binds through _lexical_call_target, with
+# the relations that bring a supertype's methods into a class: a Java interface's
+# and a Scala trait's are inherited, a C# interface's are not (_lexical_class_bases
+# skips those by name, so a class called IOBase is still a base). Kotlin is left
+# out: it falls back to a top-level function when a member's parameters do not fit.
+_LEXICAL_CALL_LANGUAGES = {
+    "tree_sitter_java": ("inherits", "implements"),
+    "tree_sitter_c_sharp": ("inherits", "implements"),
+    "tree_sitter_scala": ("inherits", "mixes_in"),
+    "tree_sitter_cpp": ("inherits",),
+}
+
+def _lexical_class_bases(
+    edges: list[dict],
+    relations: tuple[str, ...],
+    label_by_nid: dict[str, str],
+    nid_to_sf: dict[str, str],
+    method_owner: dict[str, str],
+    methods_by_owner: dict[tuple[str, str], str],
+    class_parent: dict[str, str],
+    interfaces: set[str],
+) -> dict[str, list[str]]:
+    """Supertypes of each class, in declaration order, for _lexical_call_target.
+
+    Targets named in ``interfaces`` (C#: those the file declares) are left out. A
+    base declared further down the file is still a sourceless stub during the call
+    walk, so it is read as the one class of this file that bears its name; two such
+    classes, or none, leave it a stub. An anonymous class (a class inside a method)
+    is labelled with the type after its ``new``, which is read the same way.
+    """
+    supers = [e for e in edges if e["relation"] in relations and label_by_nid.get(e["target"]) not in interfaces]
+    by_name: dict[str, list[str]] = {}
+    for nid in dict.fromkeys([owner for owner, _ in methods_by_owner] + [e["source"] for e in supers]):
+        if class_parent.get(nid) not in method_owner:   # an anonymous class is labelled with its base
+            by_name.setdefault(label_by_nid.get(nid, ""), []).append(nid)
+    bases: dict[str, list[str]] = {}
+    for e in supers:
+        target = e["target"]
+        if not nid_to_sf.get(target):
+            named = by_name.get(label_by_nid.get(target, ""), [])
+            if len(named) == 1:
+                target = named[0]
+        bases.setdefault(e["source"], []).append(target)
+    for nid, outer in class_parent.items():
+        if outer in method_owner:
+            named = by_name.get(label_by_nid.get(nid, "").split("<", 1)[0].strip(), [])
+            if len(named) == 1:
+                bases.setdefault(nid, []).append(named[0])
+    return bases
+
+def _lexical_call_target(
+    caller_nid: str,
+    callee: str,
+    label_to_nid: dict[str, str],
+    method_owner: dict[str, str],
+    methods_by_owner: dict[tuple[str, str], str],
+    class_bases: dict[str, list[str]],
+    class_parent: dict[str, str],
+) -> str | None:
+    """In-file target of an unqualified call ``m()`` made from a method.
+
+    The nearest class that has an ``m``: the caller's own class and its in-file
+    bases (nearest first, as _self_call_target walks them), then the class around
+    it, and so on outward; an anonymous class steps out through the method that
+    holds it. Two hits on one level are a tie this pass cannot order: neither is
+    bound. A name no class on that path declares (a free function, a constructor
+    call) keeps the file-wide lookup, as does a walk that reaches a nested class
+    shared by several classes of one name, since which class lies around it is
+    unknown. A supertype outside this file is invisible, so a method inherited
+    from it can lose to an enclosing class that declares the same name.
+    """
+    cls: str | None = method_owner.get(caller_nid, caller_nid)
+    visited: set[str] = set()
+    while cls and cls not in visited:
+        visited.add(cls)
+        level = [cls]
+        seen: set[str] = set()
+        while level:
+            seen.update(level)
+            hits = {methods_by_owner[(c, callee)] for c in level if (c, callee) in methods_by_owner}
+            if hits:
+                return hits.pop() if len(hits) == 1 else None
+            level = list(dict.fromkeys(
+                base for c in level for base in class_bases.get(c, ()) if base not in seen
+            ))
+        outer = class_parent.get(cls)
+        cls = method_owner.get(outer, outer) if outer else None
+    return label_to_nid.get(callee)
+
 def _python_local_bound_names(func_def_node, source: bytes) -> set[str]:
     """Names bound LOCALLY inside a Python function: parameters plus assignment,
     `for`, `with ... as`, and comprehension targets.
@@ -7071,10 +7160,14 @@ def _extract_generic(
             _local_bases.setdefault(_e["source"], []).append(_e["target"])
 
     # Class membership for self-calls (see _self_call_target): Python
-    # self/cls/super and JS/TS this/super.
+    # self/cls/super and JS/TS this/super. Unqualified calls in the
+    # _LEXICAL_CALL_LANGUAGES read it too, with the class around each class.
     method_owner: dict[str, str] = {}
     methods_by_owner: dict[tuple[str, str], str] = {}
-    if config.ts_module in _SELF_CALL_LANGUAGES:
+    class_parent: dict[str, str] = {}
+    lexical_bases: dict[str, list[str]] = {}
+    lexical_calls = config.ts_module in _LEXICAL_CALL_LANGUAGES
+    if config.ts_module in _SELF_CALL_LANGUAGES or lexical_calls:
         label_by_nid = {n["id"]: n["label"] for n in nodes}
         for e in edges:
             if e["relation"] == "method":
@@ -7083,6 +7176,15 @@ def _extract_generic(
                 if config.ts_module == "tree_sitter_php":
                     name = name.casefold()
                 methods_by_owner.setdefault((e["source"], name), e["target"])
+            elif lexical_calls and e["relation"] == "contains":
+                # two nested classes of one name are one node: which class lies around it is unknown
+                if class_parent.setdefault(e["target"], e["source"]) != e["source"]:
+                    class_parent[e["target"]] = ""
+        if lexical_calls:
+            lexical_bases = _lexical_class_bases(
+                edges, _LEXICAL_CALL_LANGUAGES[config.ts_module], label_by_nid, nid_to_sf,
+                method_owner, methods_by_owner, class_parent, csharp_interface_names,
+            )
 
     def _fields_up_chain(tables: dict, class_nid) -> dict:
         if not class_nid:
@@ -7968,6 +8070,11 @@ def _extract_generic(
                         )
                         if php_builtin_self_call and tgt_nid not in method_owner:
                             tgt_nid = None
+                    elif lexical_calls and not is_member_call:
+                        tgt_nid = _lexical_call_target(
+                            caller_nid, callee_name, label_to_nid,
+                            method_owner, methods_by_owner, lexical_bases, class_parent,
+                        )
                     else:
                         tgt_nid = label_to_nid.get(callee_name)
                     # A qualified `new A.B.Foo()` whose bare name matches only a
