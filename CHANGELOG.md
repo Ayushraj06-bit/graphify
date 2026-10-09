@@ -14,6 +14,8 @@ A C# resolution and determinism batch, plus Windows test-suite fixes.
 - Fix: an unresolved re-export target id is now portable — it is minted in a dedicated namespace with a hash over the repo-relative path instead of the absolute checkout path, so a clone produces the same graph (#4257, thanks @andan0).
 - Fix: `graphify`'s own skill runbook now reuses the persisted scan options (excludes and the gitignore flag) a prior build wrote, so a skill-driven update no longer drops opted-in files or re-adds explicitly excluded ones versus a CLI rebuild (#4250, #4240, thanks @deepanshupal).
 - Fix: the test suite passes on Windows — `_atomic_replace` refuses a read-only destination there instead of silently clobbering it (nt-only guard, no POSIX change), plus encoding, path-shape, and non-regular-file test guards (#4260, thanks @SoloDrex52).
+- Fix: **C#** nested types imported with `using static` now resolve (`using static Demo.Layer;` reaching `Layer.Inner`), fail-closed on ambiguity, complementing the enclosing-namespace resolution also in this release (#4235, #4216, thanks @hopstreax).
+- Fix: the AST cache directory is now namespaced by the installed tree-sitter grammar versions (`...-g<fingerprint>`), so upgrading a grammar within the same graphify release no longer serves stale or ABI-incompatible cached ASTs for unchanged files (#4239, #4236, thanks @nothariharan).
 
 ## 0.9.82 (2026-10-09)
 
