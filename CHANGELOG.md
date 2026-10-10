@@ -2,6 +2,14 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.84 (2026-10-10)
+
+Three correctness fixes picked directly from open issues.
+
+- Fix: **PowerShell** functions (and classes/enums) defined inside a file-scope `begin {}` / `process {}` / `end {}` block are now extracted. These blocks parse as pseudo-commands rather than named blocks, so the walker returned before descending and dropped everything inside — the common `[CmdletBinding()]` advanced-function layout (#4270).
+- Fix: **R** every backtick-quoted binding now gets a collision-free id. A partially-symbolic name like `` `%foo%` `` (or an S3 method `` `[.cls` ``, or a dotted `` `my.op` ``) normalized to the same id as an ordinary identifier and was silently dropped on merge; such names now use the reserved operator namespace (#4253). (The separate infinite-loop reported in that issue was already fixed in 0.9.83.)
+- Fix: `graphify path` and the MCP `shortest_path` tool now fail closed on a `file::symbol` endpoint whose file defines no such symbol, instead of falling back to scoring the bare name and answering from a same-named symbol in another file; the refusal lists the files that do define it (#4264).
+
 ## 0.9.83 (2026-10-09)
 
 A C# resolution and determinism batch, plus Windows test-suite fixes.
