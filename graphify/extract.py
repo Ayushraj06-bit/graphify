@@ -3465,7 +3465,11 @@ _LANGUAGE_BUILTIN_BASE_CLASSES_CI: dict[str, frozenset[str]] = {
 
 def _node_label_key(node: dict, fold: bool = False) -> str:
     label = str(node.get("label", "")).strip()
-    key = re.sub(r"[^a-zA-Z0-9]+", "", label)
+    # Keep underscores: they are significant identifier characters, so a private
+    # `_Response` must not share a key with an external `Response` and absorb its
+    # reference during stub rewiring (#4269). Only drop call/generic punctuation
+    # (`()`, `<>`, `.`, whitespace) so `Foo()` and `Foo` still match.
+    key = re.sub(r"[^a-zA-Z0-9_]+", "", label)
     return key.lower() if fold else key
 
 
